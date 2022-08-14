@@ -10,7 +10,7 @@ impl Model {
     }
 
     pub fn as_bytes(&self) -> Result<Vec<u8>> {
-        Ok(serialize(&self.model)?)
+        serialize(&self.model)
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Model> {

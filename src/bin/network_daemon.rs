@@ -59,6 +59,8 @@ use fnv::FnvHashMap;
 use message_io::network::{Endpoint, NetEvent, Transport};
 use message_io::node::{self, NodeEvent};
 
+type Handler = node::NodeHandler<NodeSignal>;
+
 const WORKER_INITIALISATION_TIMEOUT_MS: u64 = 3000;
 const PARAMETER_COUNT: usize = 1_000_000;
 const NOISE_BLOCKS: usize = 16;
@@ -72,14 +74,17 @@ struct ConnectedWorker {
 
 enum NodeSignal {
     NewConnectedWorker(Endpoint),
-    WorkerInitialisationTimeout(Endpoint),
+    WorkerCheckTimeout(Endpoint),
+    WorkerHasTimedOut(Endpoint),
     NextTransferBlock(Endpoint),
     InitialiseWorker(Endpoint),
+    SendModelToWorker(Endpoint, ParameterVersion),
+    CleanupWorker(Endpoint),
 }
 
 fn main() {
-    let mut latest_model_version: ParameterVersion = 0;
-    let mut models = FnvHashMap::<ParameterVersion, Arc<Model>>::default();
+    let latest_model_version: ParameterVersion = 0;
+    let _models = FnvHashMap::<ParameterVersion, Arc<Model>>::default();
     let mut active_transfers = FnvHashMap::<Endpoint, ParameterTransfer>::default();
     let mut connected_workers = FnvHashMap::<Endpoint, ConnectedWorker>::default();
 
@@ -87,10 +92,6 @@ fn main() {
     for i in 0..PARAMETER_COUNT {
         model.push(i as f32);
     }
-
-    models.insert(latest_model_version, Arc::new(Model::new(model)));
-
-    println!("{}", model.len());
 
     // Create a node, the main message-io entity. It is divided in 2 parts:
     // The 'handler', used to make actions (connect, send messages, signals, stop the node...)
@@ -117,107 +118,215 @@ fn main() {
             match event {
                 NetEvent::Connected(_, _) => unreachable!(), // Used for explicit connections.
                 NetEvent::Accepted(endpoint, _listener) => {
-                    handle_network_connected(&mut handler, endpoint);
+                    handle_network_connected(&handler, endpoint, &mut connected_workers);
                 }
                 NetEvent::Message(endpoint, data) => {
-                    let message: MessageFromWorker = bincode::deserialize(data).unwrap();
-                    match message {
-                        MessageFromWorker::Init => {
-                            handler
-                                .signals()
-                                .send(NodeSignal::InitialiseWorker(endpoint));
-                        }
-                        MessageFromWorker::EpisodeCompleted(episode) => {
-                            println!("Episode completed: {:?}", episode);
-                        }
-                    }
+                    let message = deserialise_worker_message(data);
+                    handle_worker_message(&handler, endpoint, message);
                 }
-                NetEvent::Disconnected(_endpoint) => println!("Client disconnected"), //Tcp or Ws
-            }
-        }
-        NodeEvent::Signal(signal) => {
-            match signal {
-                NodeSignal::InitialiseWorker(endpoint) => {
-                    println!("Initialising worker");
-                    let reply = MessageFromLearner::InitialiseWorker {
-                        seed: 1234,
-                        block_size: PARAMETER_COUNT,
-                        block_count: NOISE_BLOCKS,
-                        parameter_count: PARAMETER_COUNT,
-                    };
-                    let response = bincode::serialize(&reply).unwrap();
-                    handler.network().send(endpoint, response.as_slice());
-
-                    if active_transfers.get_mut(&endpoint).is_none() {
-                        active_transfers.insert(
-                            endpoint,
-                            ModelTransfer {
-                                next_block_offset: 0,
-                            },
-                        );
-                        handler
-                            .signals()
-                            .send(NodeSignal::NextTransferBlock(endpoint));
-                    }
-                }
-                NodeSignal::NextTransferBlock(endpoint) => {
-                    let transfer = active_transfers.get_mut(&endpoint).unwrap();
-                    // All size units are relative to count of f32 floats.
-                    let max_chunk_size = MAX_F32_CHUNK_SIZE;
-                    let chunk_offset = transfer.next_block_offset;
-                    let total_transfer_size = PARAMETER_COUNT;
-                    let chunk_size = if chunk_offset + max_chunk_size > total_transfer_size {
-                        total_transfer_size - chunk_offset
-                    } else {
-                        max_chunk_size
-                    };
-                    let chunk =
-                        test_model.as_slice()[chunk_offset..chunk_offset + chunk_size].to_vec();
-                    let chunk_hash = 0;
-                    let reply = MessageFromLearner::ParameterChunk {
-                        parameter_version: 0,
-                        chunk,
-                        chunk_offset,
-                        chunk_hash,
-                    };
-                    let response = bincode::serialize(&reply).unwrap();
-                    handler.network().send(endpoint, response.as_slice());
-                    transfer.next_block_offset += chunk_size;
-                    if transfer.next_block_offset < total_transfer_size {
-                        handler
-                            .signals()
-                            .send(NodeSignal::NextTransferBlock(endpoint));
-                    } else {
-                        active_transfers.remove(&endpoint);
-                    }
+                NetEvent::Disconnected(endpoint) => {
+                    handle_network_disconnected(&handler, endpoint);
                 }
             }
         }
+        NodeEvent::Signal(signal) => match signal {
+            NodeSignal::NewConnectedWorker(endpoint) => {
+                handle_new_connected_worker(&handler, endpoint, &mut connected_workers);
+            }
+            NodeSignal::InitialiseWorker(endpoint) => {
+                handle_worker_initialisation(
+                    &handler,
+                    endpoint,
+                    latest_model_version,
+                    &mut active_transfers,
+                );
+            }
+            NodeSignal::SendModelToWorker(endpoint, latest_version) => {
+                begin_model_transfer_if_required(
+                    &handler,
+                    endpoint,
+                    latest_version,
+                    &mut active_transfers,
+                );
+            }
+            NodeSignal::WorkerCheckTimeout(endpoint) => {
+                handle_worker_timeout_check(&handler, endpoint, &connected_workers);
+            }
+            NodeSignal::WorkerHasTimedOut(endpoint) => {
+                handle_worker_timed_out(&handler, endpoint, &mut connected_workers);
+            }
+            NodeSignal::CleanupWorker(endpoint) => {
+                handle_worker_cleanup(
+                    &handler,
+                    endpoint,
+                    &mut connected_workers,
+                    &mut active_transfers,
+                );
+            }
+            NodeSignal::NextTransferBlock(endpoint) => {
+                handle_next_transfer_block(&handler, endpoint, &mut active_transfers);
+            }
+        },
     });
 }
 
+fn handle_new_connected_worker(
+    _handler: &node::NodeHandler<NodeSignal>,
+    _endpoint: Endpoint,
+    _connected_workers: &mut std::collections::HashMap<
+        Endpoint,
+        ConnectedWorker,
+        std::hash::BuildHasherDefault<fnv::FnvHasher>,
+    >,
+) {
+    todo!()
+}
+
+fn handle_next_transfer_block(
+    _handler: &node::NodeHandler<NodeSignal>,
+    _endpoint: Endpoint,
+    _active_transfers: &mut std::collections::HashMap<
+        Endpoint,
+        ParameterTransfer,
+        std::hash::BuildHasherDefault<fnv::FnvHasher>,
+    >,
+) {
+    todo!()
+}
+
+fn handle_worker_cleanup(
+    _handler: &Handler,
+    endpoint: Endpoint,
+    connected_workers: &mut FnvHashMap<Endpoint, ConnectedWorker>,
+    active_transfers: &mut FnvHashMap<Endpoint, ParameterTransfer>,
+) {
+    println!("Worker {} is being cleaned up.", endpoint);
+    connected_workers.remove(&endpoint);
+    active_transfers.remove(&endpoint);
+    println!("Worker {} cleaned up.", endpoint);
+}
+
+fn handle_worker_timed_out(
+    handler: &node::NodeHandler<NodeSignal>,
+    endpoint: Endpoint,
+    _connected_workers: &FnvHashMap<Endpoint, ConnectedWorker>,
+) {
+    println!("Worker {} has timed out.", endpoint);
+    handler
+        .signals()
+        .send_with_priority(NodeSignal::CleanupWorker(endpoint));
+    // TODO test that this does as expected
+    // It could do weird things for UDP, if we support it then this timeout might need to change
+    handler.network().remove(endpoint.resource_id());
+}
+
+fn handle_worker_timeout_check(
+    handler: &Handler,
+    endpoint: Endpoint,
+    connected_workers: &FnvHashMap<Endpoint, ConnectedWorker>,
+) {
+    if let Some(worker) = connected_workers.get(&endpoint) {
+        if worker.has_initialised {
+            return;
+        }
+        handler
+            .signals()
+            .send(NodeSignal::WorkerHasTimedOut(endpoint));
+    }
+}
+
+fn begin_model_transfer_if_required(
+    handler: &Handler,
+    endpoint: Endpoint,
+    latest_version: ParameterVersion,
+    active_transfers: &mut FnvHashMap<Endpoint, ParameterTransfer>,
+) {
+    if active_transfers.get_mut(&endpoint).is_none() {
+        active_transfers.insert(
+            endpoint,
+            ParameterTransfer {
+                parameter_version: latest_version,
+                transfer_offset: 0,
+            },
+        );
+        handler
+            .signals()
+            .send(NodeSignal::NextTransferBlock(endpoint));
+    }
+}
+
+fn send_initialise_worker_message(handler: &Handler, endpoint: Endpoint) {
+    let message = MessageFromLearner::InitialiseWorker {
+        seed: 1234,
+        block_size: PARAMETER_COUNT,
+        block_count: NOISE_BLOCKS,
+        parameter_count: PARAMETER_COUNT,
+    };
+    let data = serialize_worker_response(message);
+    handler.network().send(endpoint, data.as_slice());
+}
+
+fn handle_worker_initialisation(
+    handler: &Handler,
+    endpoint: Endpoint,
+    latest_model_version: ParameterVersion,
+    _active_transfers: &mut FnvHashMap<Endpoint, ParameterTransfer>,
+) {
+    println!("Initialising worker");
+    send_initialise_worker_message(handler, endpoint);
+    handler.signals().send(NodeSignal::SendModelToWorker(
+        endpoint,
+        latest_model_version,
+    ));
+}
+
+fn deserialise_worker_message(data: &[u8]) -> MessageFromWorker {
+    bincode::deserialize(data).unwrap()
+}
+
+fn serialize_worker_response(response: MessageFromLearner) -> Vec<u8> {
+    bincode::serialize(&response).unwrap()
+}
+
+fn handle_worker_message(handler: &Handler, endpoint: Endpoint, message: MessageFromWorker) {
+    match message {
+        MessageFromWorker::Init => {
+            handler
+                .signals()
+                .send(NodeSignal::InitialiseWorker(endpoint));
+        }
+        MessageFromWorker::EpisodeCompleted(episode) => {
+            println!("Episode completed: {:?}", episode);
+        }
+    }
+}
 
 fn handle_network_connected(
-    handler: &mut node::NodeHandler<NodeSignal>,
+    handler: &Handler,
     endpoint: Endpoint,
+    connected_workers: &mut FnvHashMap<Endpoint, ConnectedWorker>,
 ) {
     println!("Endpoint connection: {:?}", endpoint);
+    connected_workers.insert(
+        endpoint,
+        ConnectedWorker {
+            has_initialised: false,
+        },
+    );
+
     handler
         .signals()
         .send(NodeSignal::NewConnectedWorker(endpoint));
 
-    handler
-        .signals()
-        .send_with_timer(NodeSignal::WorkerInitialisationTimeout(endpoint), Duration::from_millis(
-            WORKER_INITIALISATION_TIMEOUT_MS,
-        ));
+    handler.signals().send_with_timer(
+        NodeSignal::WorkerCheckTimeout(endpoint),
+        Duration::from_millis(WORKER_INITIALISATION_TIMEOUT_MS),
+    );
 }
 
-fn handle_network_disconnected(
-    handler: &mut node::NodeHandler<NodeSignal>,
-    endpoint: Endpoint,
-    active_transfers: &mut FnvHashMap<Endpoint, ParameterTransfer>,
-) {
+fn handle_network_disconnected(handler: &node::NodeHandler<NodeSignal>, endpoint: Endpoint) {
     println!("Endpoint disconnection: {:?}", endpoint);
-    active_transfers.remove(&endpoint);
+    handler
+        .signals()
+        .send_with_priority(NodeSignal::CleanupWorker(endpoint));
 }

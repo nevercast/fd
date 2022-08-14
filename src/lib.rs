@@ -3,24 +3,13 @@ pub mod model;
 
 use common::{MessageFromLearner, MessageFromWorker};
 use message_io::events::{EventReceiver, EventSender};
-use numpy::{PyArray1, IntoPyArray};
-use pyo3::buffer::PyBuffer;
+
 use pyo3::exceptions::{PyIOError, PyValueError};
-use pyo3::{prelude::*, PyBufferProtocol, ffi, py_run};
+use pyo3::prelude::*;
 
 use message_io::network::{Endpoint, NetEvent, Transport};
 use message_io::node::{self, NodeEvent, NodeHandler, NodeListener};
 use std::{io, thread};
-
-use pyo3::exceptions::PyBufferError;
-use pyo3::prelude::*;
-use pyo3::types::IntoPyDict;
-use pyo3::AsPyPointer;
-use std::ffi::CString;
-use std::os::raw::{c_int, c_void};
-use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 enum Signal {
     SendInit,
@@ -92,14 +81,16 @@ fn worker_thread(
                         chunk_offset,
                         chunk_hash: _,
                     } => {
+                        replies.send(SignalReplies::Report(
+                            "Received parameter chunk".to_string(),
+                        ));
                         replies.send(SignalReplies::Report(format!(
-                            "Received parameter chunk",
+                            "Parameter Version: {}",
+                            parameter_version
                         )));
                         replies.send(SignalReplies::Report(format!(
-                            "Parameter Version: {}", parameter_version
-                        )));
-                        replies.send(SignalReplies::Report(format!(
-                            "Chunk offset: {}", chunk_offset
+                            "Chunk offset: {}",
+                            chunk_offset
                         )));
 
                         // if let None = model_descriptor {
@@ -240,42 +231,6 @@ fn create_worker(connection_string: String) -> PyResult<Worker> {
     match Worker::new(transport, addr) {
         Ok(worker) => Ok(worker),
         Err(err) => Err(PyIOError::new_err(format!("{}", err))),
-    }
-}
-
-// Big static buffer on the heap
-static BUFFER: [f32; 1_000_000] = [0.0; 1_000_000];
-
-#[pyfunction]
-fn give_me_a_fat_buffer() -> PyResult<TestBufferClass> {
-    Python::with_gil(|py| {
-        Ok(TestBufferClass {
-        vec: BUFFER.to_vec(),
-        drop_called: Arc::new(AtomicBool::new(false)),
-        })
-    })
-}
-
-#[pyclass]
-struct DataGiver {
-    data: Vec<f32>,
-}
-
-impl DataGiver {
-    fn new(data: Vec<f32>) -> DataGiver {
-        DataGiver {
-            data
-        }
-    }
-}
-
-#[pymethods]
-impl DataGiver {
-    fn get_data<'a>(&self) -> PyResult<&PyArray1<f32>> {
-        let ndarr: numpy::ndarray::Array1<f32> = numpy::ndarray::Array::from(self.data);
-        Python::<'a>::with_gil(|py| {
-            Ok(ndarr.into_pyarray(py))
-        })
     }
 }
 

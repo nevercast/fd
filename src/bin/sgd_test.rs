@@ -11,11 +11,7 @@ fn next_random(rng: &mut Xoroshiro128Plus) -> f32 {
     rng.gen_range(-1.0_f32..1.0_f32)
 }
 
-fn sgd(
-    model: ModelShape,
-    step_size: f32,
-    gradient: &ModelShape,
-) -> ModelShape {
+fn sgd(model: ModelShape, step_size: f32, gradient: &ModelShape) -> ModelShape {
     let norm = gradient.norm();
     let gradient = gradient / norm;
     let gradient = step_size * gradient;
