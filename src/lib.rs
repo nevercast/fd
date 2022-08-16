@@ -17,6 +17,8 @@ use rand::{thread_rng, Rng, SeedableRng};
 use rand_xoshiro::Xoroshiro128Plus;
 use rayon::prelude::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
+use std::cell::RefCell;
+
 use std::{io, thread};
 
 enum Signal {
@@ -187,29 +189,33 @@ fn start_background_thread(transport: Transport, addr: String) -> io::Result<Wor
     Ok(WorkerLaunch(thread, frontside_handler, worker_receiver))
 }
 
+const BUFFER_SIZE: usize = 1_000_000;
+
 #[pyclass]
 struct Worker {
     // thread: thread::JoinHandle<()>,
     // handler: NodeHandler<Signal>,
     // receiver: EventReceiver<SignalReplies>,
-    rng: Xoroshiro128Plus,
     buffer: Vec<f32>,
 }
 
 impl Worker {
     fn new(_transport: Transport, _addr: String) -> io::Result<Worker> {
         // let (thread, handler, receiver) = start_background_thread(transport, addr)?.into();
-        let mut buffer = Vec::with_capacity(1_000_000);
-        buffer.resize(1_000_000, 0.0);
+        let mut buffer = Vec::with_capacity(BUFFER_SIZE);
+        buffer.resize(BUFFER_SIZE, 0.0);
 
         Ok(Worker {
             // thread,
             // handler,
             // receiver,
-            rng: Xoroshiro128Plus::from_rng(&mut thread_rng()).unwrap(),
             buffer,
         })
     }
+}
+
+thread_local! {
+    static THREAD_RNG: RefCell<Xoroshiro128Plus> = RefCell::new(Xoroshiro128Plus::from_rng(thread_rng()).unwrap());
 }
 
 #[pymethods]
@@ -224,12 +230,14 @@ impl Worker {
     fn par_rng_generate(&mut self) {
         self.buffer.par_chunks_mut(100_000).for_each_init(
             || {
-                self.rng.clone() // todo: improve
+                THREAD_RNG.with(|rng| {
+                    let mut rng = rng.borrow_mut();
+                    rng.jump();
+                    rng.clone()
+                })
             },
             |rng, chunk: &mut [f32]| {
-                rng.sample_iter(&Standard)
-                    .take(chunk.len())
-                    .collect_slice(chunk);
+                rng.sample_iter(&Standard).collect_slice(chunk);
             },
         );
     }
