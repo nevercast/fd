@@ -1,14 +1,22 @@
 pub mod common;
 pub mod model;
 
+use collect_slice::CollectSlice;
 use common::{MessageFromLearner, MessageFromWorker};
 use message_io::events::{EventReceiver, EventSender};
 
+use numpy::PyArray1;
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 
 use message_io::network::{Endpoint, NetEvent, Transport};
 use message_io::node::{self, NodeEvent, NodeHandler, NodeListener};
+
+use rand::distributions::Standard;
+use rand::{thread_rng, Rng, SeedableRng};
+use rand_xoshiro::Xoroshiro128Plus;
+use rayon::prelude::ParallelIterator;
+use rayon::slice::ParallelSliceMut;
 use std::{io, thread};
 
 enum Signal {
@@ -181,33 +189,54 @@ fn start_background_thread(transport: Transport, addr: String) -> io::Result<Wor
 
 #[pyclass]
 struct Worker {
-    thread: thread::JoinHandle<()>,
-    handler: NodeHandler<Signal>,
-    receiver: EventReceiver<SignalReplies>,
+    // thread: thread::JoinHandle<()>,
+    // handler: NodeHandler<Signal>,
+    // receiver: EventReceiver<SignalReplies>,
+    rng: Xoroshiro128Plus,
+    buffer: Vec<f32>,
 }
 
 impl Worker {
-    fn new(transport: Transport, addr: String) -> io::Result<Worker> {
-        let (thread, handler, receiver) = start_background_thread(transport, addr)?.into();
+    fn new(_transport: Transport, _addr: String) -> io::Result<Worker> {
+        // let (thread, handler, receiver) = start_background_thread(transport, addr)?.into();
+        let mut buffer = Vec::with_capacity(1_000_000);
+        buffer.resize(1_000_000, 0.0);
+
         Ok(Worker {
-            thread,
-            handler,
-            receiver,
+            // thread,
+            // handler,
+            // receiver,
+            rng: Xoroshiro128Plus::from_rng(&mut thread_rng()).unwrap(),
+            buffer,
         })
     }
 }
 
 #[pymethods]
 impl Worker {
-    fn get_signal(&mut self) -> String {
-        match self.receiver.try_receive() {
-            Some(SignalReplies::Report(msg)) => format!("Report: {}", msg),
-            None => String::from("No signal"),
-        }
+    // fn get_signal(&mut self) -> String {
+    //     match self.receiver.try_receive() {
+    //         Some(SignalReplies::Report(msg)) => format!("Report: {}", msg),
+    //         None => String::from("No signal"),
+    //     }
+    // }
+
+    fn par_rng_generate(&mut self) {
+        self.buffer.par_chunks_mut(100_000).for_each_init(
+            || {
+                self.rng.clone() // todo: improve
+            },
+            |rng, chunk: &mut [f32]| {
+                rng.sample_iter(&Standard)
+                    .take(chunk.len())
+                    .collect_slice(chunk);
+            },
+        );
     }
 
-    fn get_parameters(&self) -> PyResult<Vec<f32>> {
-        Ok(vec![1.0, 2.0, 3.0])
+    fn get_parameters<'py>(&mut self, py: Python<'py>) -> PyResult<&'py PyAny> {
+        self.par_rng_generate();
+        Ok(PyArray1::from_slice(py, &self.buffer))
     }
 
     // fn send_signal(&mut self, msg: String) -> PyResult<()> {
@@ -241,6 +270,7 @@ fn create_worker(connection_string: String) -> PyResult<Worker> {
 fn fdlib(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<Worker>()?;
     m.add_function(wrap_pyfunction!(create_worker, m)?)?;
+    // m.add_function(wrap_pyfunction!(get_buffer, m)?)?;
 
     Ok(())
 }
