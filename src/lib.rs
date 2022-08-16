@@ -12,7 +12,7 @@ use pyo3::prelude::*;
 use message_io::network::{Endpoint, NetEvent, Transport};
 use message_io::node::{self, NodeEvent, NodeHandler, NodeListener};
 
-use rand::distributions::Standard;
+use rand::distributions::{Standard, DistIter};
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_xoshiro::Xoroshiro128Plus;
 use rayon::prelude::ParallelIterator;
@@ -214,8 +214,14 @@ impl Worker {
     }
 }
 
+type XoroshiroIterator = DistIter<Standard, Xoroshiro128Plus, f32>;
+
 thread_local! {
-    static THREAD_RNG: RefCell<Xoroshiro128Plus> = RefCell::new(Xoroshiro128Plus::from_rng(thread_rng()).unwrap());
+    static THREAD_RNG: RefCell<XoroshiroIterator> = RefCell::new(
+        Xoroshiro128Plus::from_rng(thread_rng())
+        .expect("Failed to create thread rng source")
+        .sample_iter(Standard)
+    );
 }
 
 #[pymethods]
@@ -228,16 +234,11 @@ impl Worker {
     // }
 
     fn par_rng_generate(&mut self) {
-        self.buffer.par_chunks_mut(100_000).for_each_init(
-            || {
-                THREAD_RNG.with(|rng| {
-                    let mut rng = rng.borrow_mut();
-                    rng.jump();
-                    rng.clone()
-                })
-            },
-            |rng, chunk: &mut [f32]| {
-                rng.sample_iter(&Standard).collect_slice(chunk);
+        self.buffer.par_chunks_mut(100_000).for_each(
+            |chunk: &mut [f32]| {
+                THREAD_RNG.with(|rng_iter| {
+                    rng_iter.borrow_mut().collect_slice(chunk);
+                });
             },
         );
     }
