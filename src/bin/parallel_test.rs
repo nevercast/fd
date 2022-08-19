@@ -7,9 +7,11 @@ use rayon::{
     ThreadPoolBuilder,
 };
 
-struct WorkerReturn {
-    pub seed_index: u32,
+pub struct WorkerReturn {
+    pub policy_version: u32,
+    pub noise_scale: f32,
     pub reward: f64,
+    pub seed: u64,
 }
 
 struct WorkerInitialise {
