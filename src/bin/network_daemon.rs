@@ -54,7 +54,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fdlib::common::*;
-use fdlib::model::Model;
 use fnv::FnvHashMap;
 use message_io::network::{Endpoint, NetEvent, Transport};
 use message_io::node::{self, NodeEvent};
@@ -84,7 +83,7 @@ enum NodeSignal {
 
 fn main() {
     let latest_model_version: ParameterVersion = 0;
-    let _models = FnvHashMap::<ParameterVersion, Arc<Model>>::default();
+    let _models = FnvHashMap::<ParameterVersion, Arc<Vec<f32>>>::default();
     let mut active_transfers = FnvHashMap::<Endpoint, ParameterTransfer>::default();
     let mut connected_workers = FnvHashMap::<Endpoint, ConnectedWorker>::default();
 

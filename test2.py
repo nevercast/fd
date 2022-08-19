@@ -2,6 +2,7 @@ import time
 import numpy as np
 import fdlib
 import gc
+import matplotlib.pyplot as plt
 
 def format_duration(seconds):
     """ Returns either seconds, milliseconds or microseconds depending on the value of seconds.
@@ -22,36 +23,28 @@ end_time = time.time()
 print("Time for first call: ", format_duration(end_time - start_time))
 print("Buffer length: ", len(test_worker.get_parameters()))
 
-gc.collect()
-gc.disable()
-call_accumulator = 0
-for _ in range(1000):
-    start_time = time.time()
+means = []
+stds = []
+
+for n in range(100000):
     params = test_worker.get_parameters()
-    end_time = time.time()
-    call_accumulator += end_time - start_time
-    if not np.equal(params, prev_params).all():
-        print("Parameters diverged")
-    prev_params = params
-print("Rust time per call: {}".format(format_duration(call_accumulator / 1000)))
-gc.enable()
-gc.collect()
+    # get mean and dev
+    mean = np.mean(params)
+    dev = np.std(params)
+    means.append(mean)
+    stds.append(dev)
 
-# Display histogram of params with np and matplotlib
-import matplotlib.pyplot as plt
-
-parameters = test_worker.get_parameters()
-
-# Remove all 0.0 values from parameters
-# Testing fold back distribution
-parameters = parameters[parameters != 0.0]
-
-print('Median', np.median(parameters))
-print('Min, Max', np.min(parameters), np.max(parameters))
-
-fig, ax = plt.subplots()
-ax.hist(parameters, bins=100)
+# Plot the histogram of the mean and standard deviation on two separate plots
+fig, ax = plt.subplots(2, 1)
+# With titles
+ax[0].set_title('Mean')
+ax[1].set_title('Standard Deviation')
+ax[0].hist(means, bins=1000)
+ax[1].hist(stds, bins=1000)
 plt.show()
+
+
+
 
 # gc.collect()
 # gc.disable()
