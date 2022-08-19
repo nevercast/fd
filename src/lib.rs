@@ -3,10 +3,10 @@ pub mod model;
 mod noise;
 mod collect_slice;
 
-use collect_slice::CollectSlice;
 use common::{MessageFromLearner, MessageFromWorker};
 use message_io::events::{EventReceiver, EventSender};
 
+use noise::par_fill_noise_standard;
 use numpy::PyArray1;
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
@@ -14,12 +14,9 @@ use pyo3::prelude::*;
 use message_io::network::{Endpoint, NetEvent, Transport};
 use message_io::node::{self, NodeEvent, NodeHandler, NodeListener};
 
-use rand::distributions::{Standard, DistIter};
-use rand::{thread_rng, Rng, SeedableRng};
+use rand::SeedableRng;
 use rand_xoshiro::Xoroshiro128Plus;
 use rayon::prelude::ParallelIterator;
-use rayon::slice::ParallelSliceMut;
-use std::cell::RefCell;
 
 use std::{io, thread};
 
@@ -216,16 +213,6 @@ impl Worker {
     }
 }
 
-type XoroshiroIterator = DistIter<Standard, Xoroshiro128Plus, f32>;
-
-thread_local! {
-    static THREAD_RNG: RefCell<XoroshiroIterator> = RefCell::new(
-        Xoroshiro128Plus::from_rng(thread_rng())
-        .expect("Failed to create thread rng source")
-        .sample_iter(Standard)
-    );
-}
-
 #[pymethods]
 impl Worker {
     // fn get_signal(&mut self) -> String {
@@ -235,18 +222,8 @@ impl Worker {
     //     }
     // }
 
-    fn par_rng_generate(&mut self) {
-        self.buffer.par_chunks_mut(100_000).for_each(
-            |chunk: &mut [f32]| {
-                THREAD_RNG.with(|rng_iter| {
-                    rng_iter.borrow_mut().collect_slice(chunk);
-                });
-            },
-        );
-    }
-
     fn get_parameters<'py>(&mut self, py: Python<'py>) -> PyResult<&'py PyAny> {
-        self.par_rng_generate();
+        par_fill_noise_standard(Xoroshiro128Plus::seed_from_u64(0x1337), &mut self.buffer);
         Ok(PyArray1::from_slice(py, &self.buffer))
     }
 
