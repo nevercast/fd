@@ -1,4 +1,3 @@
-use collect_slice::CollectSlice;
 use rand::distributions::Open01;
 use rand::distributions::Uniform;
 use rand::prelude::Distribution;
@@ -6,6 +5,8 @@ use rand::Rng;
 use rand_xoshiro::Xoroshiro128Plus;
 use rayon::prelude::ParallelBridge;
 use rayon::prelude::ParallelIterator;
+
+use crate::collect_slice::collect_slice;
 
 /// Uniform distribution between -1.0 and 1.0, both exclusive.
 struct UniformNoise;
@@ -28,7 +29,7 @@ pub fn par_fill_noise_uniform(mut rng: Xoroshiro128Plus, buffer: &mut [f32]) {
         .map(|chunk| (jump_and_clone(&mut rng).sample_iter(UniformNoise), chunk))
         .par_bridge() // This one line makes the whole thing parallel, and it's still as safe as being sequential.
         .for_each(|(mut rng, chunk)| {
-            rng.collect_slice(chunk);
+            collect_slice(&mut rng, chunk);
         });
 }
 
@@ -49,7 +50,7 @@ pub fn par_fill_noise_standard(mut rng: Xoroshiro128Plus, buffer: &mut [f32]) {
         })
         .par_bridge()
         .for_each(|(mut rng, chunk)| {
-            rng.collect_slice(chunk);
+            collect_slice(&mut rng, chunk);
             chunk.chunks_mut(2).for_each(|pair| {
                 // Capture 2 uniform values, and make them into a standard normal.
                 let (u1, u2) = (pair[0], pair[1]);

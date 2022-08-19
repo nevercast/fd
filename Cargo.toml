@@ -21,13 +21,11 @@ nalgebra = { version = "0.31.1" }
 rand = "0.8.5"
 rand_xoshiro = { version = "0.6.0", features = ["serde1"] }
 serde = "1.0.142"
-lzzzz = "1.0.3"
 rayon = "1.5.3"
 message-io = "0.14.6"
 pyo3 = { version = "0.16.5", features = ["extension-module"] }
 bincode = "1.3.3"
 numpy = "0.16.2"
-collect_slice = "1.2.0"
 
 [profile.release]
 lto = true

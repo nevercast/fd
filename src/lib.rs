@@ -1,6 +1,7 @@
 pub mod common;
 pub mod model;
 mod noise;
+mod collect_slice;
 
 use collect_slice::CollectSlice;
 use common::{MessageFromLearner, MessageFromWorker};
