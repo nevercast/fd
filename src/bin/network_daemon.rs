@@ -62,9 +62,9 @@ type Handler = node::NodeHandler<NodeSignal>;
 
 const WORKER_INITIALISATION_TIMEOUT_MS: u64 = 3000;
 const PARAMETER_COUNT: usize = 1_000_000;
-const NOISE_BLOCKS: usize = 16;
 
 // MAXIMUM MODEL AGE also applies to dropping received returns from worker episodes.
+#[allow(dead_code)]
 const MAXIMUM_MODEL_AGE: u32 = 10;
 
 struct ConnectedWorker {
@@ -77,14 +77,14 @@ enum NodeSignal {
     WorkerHasTimedOut(Endpoint),
     NextTransferBlock(Endpoint),
     InitialiseWorker(Endpoint),
-    SendModelToWorker(Endpoint, ParameterVersion),
+    SendModelToWorker(Endpoint, ModelVersion),
     CleanupWorker(Endpoint),
 }
 
 fn main() {
-    let latest_model_version: ParameterVersion = 0;
-    let _models = FnvHashMap::<ParameterVersion, Arc<Vec<f32>>>::default();
-    let mut active_transfers = FnvHashMap::<Endpoint, ParameterTransfer>::default();
+    let latest_model_version: ModelVersion = 0;
+    let _models = FnvHashMap::<ModelVersion, Arc<Vec<f32>>>::default();
+    let mut active_transfers = FnvHashMap::<Endpoint, ModelTransfer>::default();
     let mut connected_workers = FnvHashMap::<Endpoint, ConnectedWorker>::default();
 
     let mut model = Vec::<f32>::with_capacity(PARAMETER_COUNT);
@@ -152,7 +152,7 @@ fn main() {
                 handle_worker_timeout_check(&handler, endpoint, &connected_workers);
             }
             NodeSignal::WorkerHasTimedOut(endpoint) => {
-                handle_worker_timed_out(&handler, endpoint, &mut connected_workers);
+                handle_worker_timed_out(&handler, endpoint, &connected_workers);
             }
             NodeSignal::CleanupWorker(endpoint) => {
                 handle_worker_cleanup(
@@ -186,7 +186,7 @@ fn handle_next_transfer_block(
     _endpoint: Endpoint,
     _active_transfers: &mut std::collections::HashMap<
         Endpoint,
-        ParameterTransfer,
+        ModelTransfer,
         std::hash::BuildHasherDefault<fnv::FnvHasher>,
     >,
 ) {
@@ -197,7 +197,7 @@ fn handle_worker_cleanup(
     _handler: &Handler,
     endpoint: Endpoint,
     connected_workers: &mut FnvHashMap<Endpoint, ConnectedWorker>,
-    active_transfers: &mut FnvHashMap<Endpoint, ParameterTransfer>,
+    active_transfers: &mut FnvHashMap<Endpoint, ModelTransfer>,
 ) {
     println!("Worker {} is being cleaned up.", endpoint);
     connected_workers.remove(&endpoint);
@@ -237,15 +237,16 @@ fn handle_worker_timeout_check(
 fn begin_model_transfer_if_required(
     handler: &Handler,
     endpoint: Endpoint,
-    latest_version: ParameterVersion,
-    active_transfers: &mut FnvHashMap<Endpoint, ParameterTransfer>,
+    latest_version: ModelVersion,
+    active_transfers: &mut FnvHashMap<Endpoint, ModelTransfer>,
 ) {
     if active_transfers.get_mut(&endpoint).is_none() {
         active_transfers.insert(
             endpoint,
-            ParameterTransfer {
-                parameter_version: latest_version,
+            ModelTransfer {
+                model_version: latest_version,
                 transfer_offset: 0,
+                buffer: vec![0.0; 0],
             },
         );
         handler
@@ -256,9 +257,6 @@ fn begin_model_transfer_if_required(
 
 fn send_initialise_worker_message(handler: &Handler, endpoint: Endpoint) {
     let message = MessageFromLearner::InitialiseWorker {
-        seed: 1234,
-        block_size: PARAMETER_COUNT,
-        block_count: NOISE_BLOCKS,
         parameter_count: PARAMETER_COUNT,
     };
     let data = serialize_worker_response(message);
@@ -268,8 +266,8 @@ fn send_initialise_worker_message(handler: &Handler, endpoint: Endpoint) {
 fn handle_worker_initialisation(
     handler: &Handler,
     endpoint: Endpoint,
-    latest_model_version: ParameterVersion,
-    _active_transfers: &mut FnvHashMap<Endpoint, ParameterTransfer>,
+    latest_model_version: ModelVersion,
+    _active_transfers: &mut FnvHashMap<Endpoint, ModelTransfer>,
 ) {
     println!("Initialising worker");
     send_initialise_worker_message(handler, endpoint);

@@ -73,11 +73,7 @@ mod tests {
     use rand_xoshiro::Xoroshiro128Plus;
 
     fn create_sized_buffer(size: usize) -> Vec<f32> {
-        let mut buffer = Vec::with_capacity(size);
-        for _ in 0..size {
-            buffer.push(0.0);
-        }
-        buffer
+        vec![0.0; size]
     }
 
     #[test]

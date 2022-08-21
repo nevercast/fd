@@ -14,10 +14,6 @@ pub struct WorkerReturn {
     pub seed: u64,
 }
 
-struct WorkerInitialise {
-    pub seed: [u8; 16],
-}
-
 const MODEL_SIZE: usize = 1_000_000;
 const STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -38,7 +34,7 @@ fn combine_noise(a: &mut [f32; MODEL_SIZE], b: &[f32; MODEL_SIZE]) {
         .for_each(|(a, b)| *a = (*a + *b) / 2.0);
 }
 
-fn big_stack_energy(noise_buf: &Box<Vec<[f32; MODEL_SIZE]>>) {
+fn big_stack_energy(noise_buf: &[[f32; MODEL_SIZE]]) {
     let start = std::time::Instant::now();
     let noise_product = noise_buf.iter().fold([0.0; MODEL_SIZE], |mut acc, noise| {
         combine_noise(&mut acc, noise);
@@ -62,8 +58,8 @@ impl Clone for NoiseGen {
     }
 }
 
-fn create_noise_buf() -> Box<Vec<[f32; MODEL_SIZE]>> {
-    let mut noise_buf = Box::new(Vec::<[f32; MODEL_SIZE]>::with_capacity(1_000));
+fn create_noise_buf() -> Vec<[f32; MODEL_SIZE]> {
+    let mut noise_buf = Vec::<[f32; MODEL_SIZE]>::with_capacity(1_000);
     let prng_source = Xoshiro128Plus::from_seed([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0]);
     let noise_gen = NoiseGen(prng_source);
 
@@ -84,7 +80,7 @@ fn main() {
         .unwrap();
 
     // Fill the noise buf in separate thread
-    let noise_buf: Box<Vec<[f32; MODEL_SIZE]>> = thread::Builder::new()
+    let noise_buf: Vec<[f32; MODEL_SIZE]> = thread::Builder::new()
         .stack_size(STACK_SIZE)
         .spawn(create_noise_buf)
         .unwrap()
